@@ -1,0 +1,240 @@
+name: Statamic Update (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        default: '8.3'
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+
+      - name: Get installed Statamic version
+        id: installed
+        run: |
+          VERSION=$(composer show statamic/cms --format=json 2>/dev/null | jq -r '.versions[0]' | sed 's/^v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+
+      - name: Get latest Statamic version from Packagist
+        id: latest
+        run: |
+          RESPONSE=$(curl -sf "https://repo.packagist.org/p2/statamic/cms.json")
+          LATEST=$(echo "$RESPONSE" | jq -r '
+            .packages["statamic/cms"]
+            | map(select(.version | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$")))
+            | sort_by(.version_normalized)
+            | reverse
+            | .[0].version
+          ' | sed 's/^v//')
+          echo "version=$LATEST" >> $GITHUB_OUTPUT
+          LATEST_MAJOR=$(echo "$LATEST" | cut -d. -f1)
+          echo "major=$LATEST_MAJOR" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare
+        run: |
+          INSTALLED="${{ steps.installed.outputs.version }}"
+          LATEST="${{ steps.latest.outputs.version }}"
+          INSTALLED_MAJOR="${{ steps.installed.outputs.major }}"
+          LATEST_MAJOR="${{ steps.latest.outputs.major }}"
+
+          echo "Installed: $INSTALLED"
+          echo "Latest:    $LATEST"
+
+          if [ "$INSTALLED" = "$LATEST" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "is_major=false" >> $GITHUB_OUTPUT
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            if [ "$LATEST_MAJOR" -gt "$INSTALLED_MAJOR" ]; then
+              echo "is_major=true" >> $GITHUB_OUTPUT
+            else
+              echo "is_major=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Stop if already up to date
+        if: steps.compare.outputs.up_to_date == 'true'
+        run: echo "Statamic is already at ${{ steps.installed.outputs.version }} — nothing to do."
+
+      - name: Check for existing PR
+        if: steps.compare.outputs.up_to_date == 'false'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST="${{ steps.latest.outputs.version }}"
+          BRANCH="statamic/update-to-${LATEST}"
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          if [ -n "$EXISTING" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "PR #$EXISTING already exists for $BRANCH — skipping."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false'
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Run composer update
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false'
+        run: |
+          IS_MAJOR="${{ steps.compare.outputs.is_major }}"
+
+          if [ "$IS_MAJOR" = "true" ]; then
+            LATEST_MAJOR="${{ steps.latest.outputs.major }}"
+            composer require "statamic/cms:^${LATEST_MAJOR}.0" --no-interaction --update-with-dependencies
+          else
+            composer update statamic/cms --no-interaction --with-dependencies
+          fi
+
+      - name: Detect and run test suite
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false'
+        id: tests
+        run: |
+          if [ -f "vendor/bin/pest" ]; then
+            echo "runner=pest" >> $GITHUB_OUTPUT
+            vendor/bin/pest --ci && echo "passed=true" >> $GITHUB_OUTPUT || echo "passed=false" >> $GITHUB_OUTPUT
+          elif [ -f "vendor/bin/phpunit" ]; then
+            echo "runner=phpunit" >> $GITHUB_OUTPUT
+            vendor/bin/phpunit && echo "passed=true" >> $GITHUB_OUTPUT || echo "passed=false" >> $GITHUB_OUTPUT
+          else
+            echo "runner=none" >> $GITHUB_OUTPUT
+            echo "passed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push branch
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false'
+        run: |
+          BRANCH="${{ steps.existing_pr.outputs.branch }}"
+          LATEST="${{ steps.latest.outputs.version }}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add composer.json composer.lock
+          git commit -m "chore: update statamic/cms to v${LATEST}"
+          git push origin "$BRANCH"
+
+      - name: Open PR (minor/patch)
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false' &&
+          steps.compare.outputs.is_major == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          INSTALLED="${{ steps.installed.outputs.version }}"
+          LATEST="${{ steps.latest.outputs.version }}"
+
+          if [ "${{ steps.tests.outputs.runner }}" = "none" ]; then
+            TEST_STATUS="⚪ No test suite detected"
+          elif [ "${{ steps.tests.outputs.passed }}" = "true" ]; then
+            TEST_STATUS="✅ Tests passed (${{ steps.tests.outputs.runner }})"
+          else
+            TEST_STATUS="❌ Tests failed (${{ steps.tests.outputs.runner }}) — review before merging"
+          fi
+
+          gh pr create \
+            --title "chore: update Statamic from v${INSTALLED} to v${LATEST}" \
+            --body "$(cat <<EOF
+          ## Statamic CMS update
+
+          | | Version |
+          |---|---|
+          | **Installed** | \`${INSTALLED}\` |
+          | **Latest** | \`${LATEST}\` |
+
+          ### Tests
+          ${TEST_STATUS}
+
+          ### Links
+          - [Changelog](https://statamic.com/changelog)
+          - [Upgrade guide](https://statamic.dev/upgrade-guide)
+
+          ---
+          *Opened automatically by the Statamic update workflow.*
+          EOF
+          )" \
+            --head "${{ steps.existing_pr.outputs.branch }}" \
+            --base main \
+            --label "dependencies"
+
+      - name: Open PR (major version bump)
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false' &&
+          steps.compare.outputs.is_major == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          INSTALLED="${{ steps.installed.outputs.version }}"
+          LATEST="${{ steps.latest.outputs.version }}"
+          LATEST_MAJOR="${{ steps.latest.outputs.major }}"
+
+          if [ "${{ steps.tests.outputs.runner }}" = "none" ]; then
+            TEST_STATUS="⚪ No test suite detected"
+          elif [ "${{ steps.tests.outputs.passed }}" = "true" ]; then
+            TEST_STATUS="✅ Tests passed (${{ steps.tests.outputs.runner }})"
+          else
+            TEST_STATUS="❌ Tests failed (${{ steps.tests.outputs.runner }}) — review before merging"
+          fi
+
+          gh pr create \
+            --title "chore(major): Statamic v${LATEST_MAJOR} available — v${INSTALLED} → v${LATEST}" \
+            --body "$(cat <<EOF
+          ## ⚠️ Major Statamic version available
+
+          | | Version |
+          |---|---|
+          | **Installed** | \`${INSTALLED}\` |
+          | **Latest** | \`${LATEST}\` |
+
+          This is a **major version bump** and likely contains breaking changes.
+
+          ### Tests
+          ${TEST_STATUS}
+
+          ### Before merging
+          - [ ] Review the [upgrade guide](https://statamic.dev/upgrade-guide)
+          - [ ] Check addon compatibility
+          - [ ] Test locally before merging
+
+          ### Links
+          - [Changelog](https://statamic.com/changelog)
+          - [Upgrade guide](https://statamic.dev/upgrade-guide)
+
+          ---
+          *Opened automatically by the Statamic update workflow.*
+          EOF
+          )" \
+            --head "${{ steps.existing_pr.outputs.branch }}" \
+            --base main \
+            --label "dependencies,major-update"

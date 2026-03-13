@@ -7,6 +7,10 @@ on:
       php-version:
         type: string
         default: '8.3'
+      env-vars:
+        description: 'Environment variables to set (one per line, KEY=VALUE format)'
+        type: string
+        default: ''
 
 jobs:
   check-and-update:
@@ -119,6 +123,15 @@ jobs:
             composer update statamic/cms --no-interaction --with-dependencies
           fi
 
+      - name: Set environment variables
+        if: inputs.env-vars != ''
+        run: |
+          echo "${{ inputs.env-vars }}" | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              echo "$line" >> $GITHUB_ENV
+            fi
+          done
+
       - name: Detect and run test suite
         if: |
           steps.compare.outputs.up_to_date == 'false' &&
@@ -146,6 +159,10 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Delete stale remote branch from previous failed runs
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+
           git checkout -b "$BRANCH"
           git add composer.json composer.lock
           git commit -m "chore: update statamic/cms to v${LATEST}"

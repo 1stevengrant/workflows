@@ -1,3 +1,4 @@
+# .github/workflows/statamic-update.yml (your-org/workflows)
 name: Statamic Update (Reusable)
 
 on:
@@ -24,14 +25,6 @@ jobs:
           php-version: ${{ inputs.php-version }}
           tools: composer:v2
 
-      - name: Get installed Statamic version
-        id: installed
-        run: |
-          VERSION=$(composer show statamic/cms --format=json 2>/dev/null | jq -r '.versions[0]' | sed 's/^v//')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
-
       - name: Get latest Statamic version from Packagist
         id: latest
         run: |
@@ -46,6 +39,17 @@ jobs:
           echo "version=$LATEST" >> $GITHUB_OUTPUT
           LATEST_MAJOR=$(echo "$LATEST" | cut -d. -f1)
           echo "major=$LATEST_MAJOR" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Get installed Statamic version
+        id: installed
+        run: |
+          VERSION=$(composer show statamic/cms --format=json 2>/dev/null | jq -r '.versions[0]' | sed 's/^v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
 
       - name: Compare versions
         id: compare
@@ -91,11 +95,15 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install dependencies
+      - name: Ensure labels exist
         if: |
           steps.compare.outputs.up_to_date == 'false' &&
           steps.existing_pr.outputs.exists == 'false'
-        run: composer install --no-interaction --prefer-dist --no-progress
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "dependencies" --color "0075ca" --description "Dependency updates" --force
+          gh label create "major-update" --color "e4e669" --description "Major version bump" --force
 
       - name: Run composer update
         if: |

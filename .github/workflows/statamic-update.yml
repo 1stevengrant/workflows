@@ -123,14 +123,22 @@ jobs:
             composer update statamic/cms --no-interaction --with-dependencies
           fi
 
-      - name: Set environment variables
-        if: inputs.env-vars != ''
+      - name: Prepare environment
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false'
         run: |
-          echo "${{ inputs.env-vars }}" | while IFS= read -r line; do
-            if [ -n "$line" ]; then
-              echo "$line" >> $GITHUB_ENV
-            fi
-          done
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Configure test environment
+        if: |
+          steps.compare.outputs.up_to_date == 'false' &&
+          steps.existing_pr.outputs.exists == 'false' &&
+          inputs.env-vars != ''
+        run: |
+          echo "" >> .env
+          echo "${{ inputs.env-vars }}" >> .env
 
       - name: Detect and run test suite
         if: |

@@ -70,7 +70,7 @@ jobs:
   deploy:
     needs: tests
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name == 'push'
 
     steps:
       - name: Trigger deploy
@@ -79,7 +79,7 @@ jobs:
   release:
     needs: deploy
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && inputs.create-release }}
+    if: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name == 'push' && inputs.create-release }}
 
     steps:
       - uses: actions/checkout@v4

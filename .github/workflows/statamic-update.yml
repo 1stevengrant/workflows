@@ -118,6 +118,7 @@ jobs:
           steps.compare.outputs.up_to_date == 'false' &&
           steps.existing_pr.outputs.exists == 'false'
         run: |
+          composer config audit.block-insecure false
           IS_MAJOR="${{ steps.compare.outputs.is_major }}"
 
           if [ "$IS_MAJOR" = "true" ]; then

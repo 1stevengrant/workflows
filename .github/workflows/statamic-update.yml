@@ -123,7 +123,8 @@ jobs:
 
           if [ "$IS_MAJOR" = "true" ]; then
             LATEST_MAJOR="${{ steps.latest.outputs.major }}"
-            composer require "statamic/cms:^${LATEST_MAJOR}.0" --no-interaction -W
+            composer require "statamic/cms:^${LATEST_MAJOR}.0" --no-interaction --no-update
+            composer update --no-interaction -W
           else
             composer update statamic/cms --no-interaction -W
           fi

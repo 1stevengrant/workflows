@@ -23,6 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect default branch
+        id: default_branch
+        run: echo "name=$(git remote show origin | awk '/HEAD branch/ {print $NF}')" >> $GITHUB_OUTPUT
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -118,9 +122,9 @@ jobs:
 
           if [ "$IS_MAJOR" = "true" ]; then
             LATEST_MAJOR="${{ steps.latest.outputs.major }}"
-            composer require "statamic/cms:^${LATEST_MAJOR}.0" --no-interaction --update-with-dependencies
+            composer require "statamic/cms:^${LATEST_MAJOR}.0" --no-interaction -W
           else
-            composer update statamic/cms --no-interaction --with-dependencies
+            composer update statamic/cms --no-interaction -W
           fi
 
       - name: Prepare environment
@@ -217,7 +221,7 @@ jobs:
           EOF
           )" \
             --head "${{ steps.existing_pr.outputs.branch }}" \
-            --base main \
+            --base "${{ steps.default_branch.outputs.name }}" \
             --label "dependencies"
 
       - name: Open PR (major version bump)
@@ -269,5 +273,5 @@ jobs:
           EOF
           )" \
             --head "${{ steps.existing_pr.outputs.branch }}" \
-            --base main \
+            --base "${{ steps.default_branch.outputs.name }}" \
             --label "dependencies,major-update"
